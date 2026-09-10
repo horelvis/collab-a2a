@@ -27,6 +27,8 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.authentication import AuthenticationMiddleware
 
+from ..messaging.routes import register_queue_routes
+from ..messaging.store import QueueStore
 from ..protocol import (
     DEFAULT_ROOM,
     EXT_PREFIX,
@@ -1255,6 +1257,44 @@ def create_app(
             "seq": store.max_seq(),
             "uptime_seconds": round(time.time() - app.state.started_at, 1),
         }
+
+    # --- extension: the durable queue -------------------------------------------
+
+    # BEFORE the A2A mount below, like every other extension route: its
+    # greedy "/{tenant}" mount shadows anything registered after it, and a
+    # shadowed route answers 404 rather than failing loudly.
+
+    # ONE DATABASE, TWO CONNECTIONS. The queue tables live in the hub's own
+    # SQLite file so a session's backup, its resume and its pending messages
+    # travel together — a queue kept in a file of its own is one somebody
+    # copies the session without.
+    queue = QueueStore(store.path)
+    app.state.queue = queue
+
+    def queue_room_members(room: str) -> list[str] | None:
+        """Who is in a room, for a message addressed to the conversation.
+
+        A room here is a name everybody in the session can speak into, so its
+        members are the session's live participants. Revoked ones are left out:
+        somebody who was removed is not a destination.
+        """
+        if room not in (store.rooms() or [DEFAULT_ROOM]):
+            return None
+        return [person.id for person in store.participants()]
+
+    register_queue_routes(app, queue, _require, queue_room_members)
+
+    @app.on_event("startup")
+    async def _retire_reservations_from_the_last_run() -> None:
+        # A consumer holding a reservation from before this process started
+        # must come back and take a new one: its token is from a lifetime that
+        # ended, and honouring it would let two sessions consume one mailbox
+        # across a restart.
+        await asyncio.to_thread(queue.invalidate_leases)
+
+    @app.on_event("shutdown")
+    async def _close_the_queue() -> None:
+        await asyncio.to_thread(queue.close)
 
     # Mounted after the extension routes on purpose: the SDK's REST binding
     # registers a greedy "/{tenant}" mount at the root, and Starlette matches in

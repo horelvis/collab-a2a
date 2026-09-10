@@ -1,0 +1,22 @@
+{
+  "name": "opencode-collab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deliver durable collab messages into an existing OpenCode session",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/sdk": "1.18.29",
+    "@types/node": "24.7.0",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.29"
+  }
+}

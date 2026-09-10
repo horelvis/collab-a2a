@@ -152,6 +152,16 @@ All of these require `Authorization: Bearer <participant token>` except `/join`.
 | `POST` | `/ext/collab/v1/files/{id}/ack` | confirm receipt → **deletes the file** |
 | `DELETE` | `/ext/collab/v1/files/{id}` | withdraw (sender or host) |
 | `POST` | `/ext/collab/v1/revoke` | remove a participant (**host only**) |
+| `POST` | `/ext/collab/v1/queue/mailboxes` | create or fetch a mailbox of your own |
+| `GET` | `/ext/collab/v1/queue/mailboxes` | the mailboxes you own |
+| `POST` | `/ext/collab/v1/queue/messages` | accept a durable message for mailboxes or a room. Idempotent on (sender, id); `409` on the same id with different content |
+| `GET` | `/ext/collab/v1/queue/mailboxes/{id}/pending` | unacknowledged messages, oldest first; `?wait=` holds the request open |
+| `POST` | `/ext/collab/v1/queue/mailboxes/{id}/lease` | reserve the mailbox for one session; `409` if another holds it |
+| `POST` | `/ext/collab/v1/queue/mailboxes/{id}/renew` | extend that reservation |
+| `POST` | `/ext/collab/v1/queue/mailboxes/{id}/release` | give it back |
+| `POST` | `/ext/collab/v1/queue/mailboxes/{id}/receipts` | record `delivered` or `acknowledged` for one message |
+| `GET` | `/ext/collab/v1/queue/mailboxes/{id}/status` | counts by state, oldest pending, who holds it |
+| `GET` | `/ext/collab/v1/queue/mailboxes/{id}/transitions/{message}` | every state that message has been in |
 | `GET` | `/ext/collab/v1/health` | liveness; no auth |
 
 ## 4. The join handshake

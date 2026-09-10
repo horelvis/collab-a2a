@@ -43,6 +43,7 @@ These are noted per command below.
 | [`watch`](#watch) | Open a readable live transcript. |
 | [`demo`](#demo) | Draw a fake agent beside the simulated session, for screenshots. |
 | [`file`](#file) | Share files without pasting them as text. |
+| [`queue`](#queue) | Durable messages that survive the server, the session and the process. |
 | [`status`](#status) | Show connection status for this repository. |
 | [`url`](#url) | Reprint the join line (host only). |
 | [`kick`](#kick) | Remove a participant (host only). |
@@ -1147,6 +1148,56 @@ session when it was sent: each `get` records that one collection and says how
 many are still to collect, and the copy goes with the last of them or after
 30 minutes, whichever comes first. `list` shows who is still to collect a room
 file.
+
+## queue
+
+Durable messaging. `send` here is not [`send`](#send): an ordinary message goes
+to whoever is connected right now, and is gone if nobody is. A queued message is
+written to this machine's outbox first, accepted and sequenced by the queue
+server, and stays pending until the agent that received it acknowledges it by
+id — across a hub restart, a closed editor and a machine that was switched off.
+
+The queue server is the collab hub: the tables live in the same SQLite file, so
+a session's backup carries its pending messages with it.
+
+```text
+collab queue configure --server URL --profile SESSION --identity NAME --mode MODE
+collab queue send [--to MAILBOX | --room ROOM] [--kind KIND] [--conversation ID]
+                  [--reply-to ID] [--message-id ID] text [text ...]
+collab queue status [--json]
+collab queue bind --mailbox ID --session ID --directory PATH [--runtime NAME] [--mode MODE]
+collab queue pause [--mailbox ID] [--reason TEXT]
+collab queue resume [--mailbox ID]
+collab queue retry [--message-id ID]
+collab queue bridge [--no-notifications]
+```
+
+| Argument or flag | Meaning |
+|---|---|
+| `--server URL` | Where the queue server is. One per collaboration environment, chosen here rather than defaulted to any machine. |
+| `--profile SESSION` | The saved session whose token this queue authenticates with. The token itself is never an argument: it is read from that profile, which is already 0600 in the session's own directory. |
+| `--identity NAME` | This agent's mailbox name, e.g. `mac/ios`. Stable across rooms and across OpenCode sessions. |
+| `--mode MODE` | `automatic` — pending work is grouped into a turn in the bound session — or `notification`, where it is shown and waits for a person. Chosen explicitly: it decides whether a peer's message can start a turn. |
+| `--to MAILBOX` | With `send`: the recipient mailbox. |
+| `--room ROOM` | With `send`: everyone in that conversation, fixed at the moment the server accepts it. |
+| `--kind KIND` | `request`, `response` or `informational`. Only the first two may start a turn; an informational record is filed. |
+| `--message-id ID` | With `send`: reuse a specific id — a retry of the same message rather than a second one. With `retry`: the one blocked message to unblock. |
+| `--json` | With `status`: the whole state as JSON, counted from the database and carrying no credential. |
+| `--mailbox ID` | With `bind`, `pause` and `resume`: which mailbox. |
+| `--session ID` | With `bind`: the OpenCode session that consumes it. |
+| `--directory PATH` | With `bind`: that session's project directory. Delivery refuses a session whose directory has changed. |
+| `--runtime NAME` | With `bind`: which coding tool holds the session. Default `opencode`. |
+| `--reason TEXT` | With `pause`: why, so the person who finds it paused knows. |
+| `--no-notifications` | With `bridge`: answer requests only, and never push pending work. |
+
+**States mean different things.** `queued` is this machine's promise, `accepted`
+is the server's, delivery is evidence that the bound session was given the
+message, and an acknowledgement is the agent naming its id back. None of the
+four means the work was done — that is the task board's business.
+
+**A blocked message waits for a person.** A rejected token, or a payload the
+server refuses, is not retried in a loop: it is recorded with the reason and
+left, and `collab queue retry` puts it back after the fault is dealt with.
 
 ## status
 
