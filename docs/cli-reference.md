@@ -1170,6 +1170,9 @@ collab queue pause [--mailbox ID] [--reason TEXT]
 collab queue resume [--mailbox ID]
 collab queue retry [--message-id ID]
 collab queue bridge [--no-notifications]
+collab queue take [--limit N] [--mailbox ID]
+collab queue ack --id ID [--id ID ...] [--sender MAILBOX] [--mailbox ID]
+collab queue deliver --pane TARGET [--session ID] [--directory PATH] [--once]
 ```
 
 | Argument or flag | Meaning |
@@ -1189,11 +1192,33 @@ collab queue bridge [--no-notifications]
 | `--runtime NAME` | With `bind`: which coding tool holds the session. Default `opencode`. |
 | `--reason TEXT` | With `pause`: why, so the person who finds it paused knows. |
 | `--no-notifications` | With `bridge`: answer requests only, and never push pending work. |
+| `--id ID` | With `ack`: a message id this session was given, once per message. An id this machine never delivered is refused rather than reported to its sender as read. |
+| `--sender MAILBOX` | With `ack`: which sender's message, in the rare case two have used the same id. |
+| `--limit N` | With `take`: at most this many messages in the batch. |
+| `--pane TARGET` | With `deliver`: the tmux pane the Claude Code session is running in, e.g. `%3`. |
+| `--once` | With `deliver`: take one batch and stop. |
 
 **States mean different things.** `queued` is this machine's promise, `accepted`
 is the server's, delivery is evidence that the bound session was given the
 message, and an acknowledgement is the agent naming its id back. None of the
 four means the work was done — that is the task board's business.
+
+**Claude Code has no plugin host**, so its half is commands instead. `collab
+queue take` hands the next batch to the agent that ran it — the strongest of
+the three deliveries, because the batch IS the command's output and the marker
+goes into the transcript with it. `collab queue deliver --pane %3` holds the
+mailbox beside an open session, writes each
+batch to a file and types one line into the pane pointing at it — the peer's
+text is never typed, so a message from another machine cannot become a line in
+somebody's terminal. The line carries the delivery marker, which lands in that
+session's own transcript and is what proves the delivery. The agent then runs
+`collab queue ack --id ...` in its own shell; that command holds no reservation,
+it leaves the ask for whoever does.
+
+There is no busy/idle to ask about in a pane, so the «never interrupt a turn»
+guarantee of the OpenCode path is not available here: Claude Code queues typed
+input instead. The turn cap and the pause are what remain, and they are the two
+that stop a loop.
 
 **A blocked message waits for a person.** A rejected token, or a payload the
 server refuses, is not retried in a loop: it is recorded with the reason and

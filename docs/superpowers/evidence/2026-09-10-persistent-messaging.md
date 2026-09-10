@@ -110,3 +110,37 @@ fails on the machine» of a different kind.
 No comparison of turns or tokens against polling. The design says not to claim
 a saving without measuring both sides the same way, and neither side has been
 measured.
+
+## Claude Code, 2026-09-10
+
+Claude Code has no plugin host, so the same three questions — where the batch
+goes, how we know it landed, how the agent acknowledges — are answered by two
+commands and a transcript.
+
+Proved in a real Claude Code session (`48cacc77-4119-4b0c-b6ef-c1af205bd106`,
+project `/Users/horelvis/git/ios-jarvis`), against the running hub, with a
+third collab profile as the sender:
+
+| Step | Result |
+|---|---|
+| `collab queue configure` + `bind` for that session | mailbox `mb_42e2cbee7150` |
+| A peer sends `m_cc_uno` | accepted 17:14:20 |
+| `collab queue take` in the session's own shell | the batch, with `[collab-delivery:at_5e6c63aff0d4]`; delivered 17:14:31 |
+| The marker in that session's transcript | found — `~/.claude/projects/-Users-horelvis-git-ios-jarvis/48cacc77-…jsonl` |
+| `collab queue ack --id m_cc_uno` | acknowledged 17:15:20 |
+
+**And one fault it found.** A pulled delivery lands in the transcript as a
+`tool_result` block, whose text is nested a level below the `text` blocks a
+typed message produces. The reader called the delivery absent with the marker
+three lines above it in the same file — which, for the `deliver` route, is the
+difference between «retry, it never arrived» and the truth.
+
+### Not proved here
+
+- **The push route.** `collab queue deliver --pane` needs tmux, and tmux is not
+  installed on this machine. The typing itself is therefore untested outside
+  unit tests with a fake pane; the batch file, the marker, the journal and the
+  reconciliation around it are shared with the pull route and are exercised.
+- **A busy Claude Code session.** There is no status to ask for, and typed
+  input is queued rather than refused. The turn cap and the pause are what
+  stand in for «do not interrupt»; nothing here measures how well.

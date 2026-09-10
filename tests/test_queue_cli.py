@@ -448,3 +448,66 @@ def test_resuming_says_so_and_announces_the_pending_again(home):
     assert [w['method'] for w in written] == ['resumed', 'pending']
     assert written[0]['params']['mailbox'] == 'mb_mine'
     assert [r['id'] for r in written[1]['params']['records']] == ['m1']
+
+
+# --- acknowledging from the agent's own shell ---------------------------------
+
+def test_ack_refuses_an_id_this_machine_never_delivered(home, capsys):
+    from collab.messaging.model import Binding
+
+    _configured(home)
+    local = LocalStore(home['root'] / 'cfg' / 'queue' / 'local.db')
+    local.bind('http://127.0.0.1:1',
+               Binding('mb_mine', 'claude', 'ses-1', '/project', 'automatic'))
+    local.close()
+    assert _run('ack', '--id', 'm_never') == 1
+    assert 'not delivered' in capsys.readouterr().err
+
+
+def test_ack_records_what_the_agent_says_it_has(home, capsys):
+    from collab.messaging.model import Binding
+
+    _configured(home)
+    local = LocalStore(home['root'] / 'cfg' / 'queue' / 'local.db')
+    binding = Binding('mb_mine', 'claude', 'ses-1', '/project', 'automatic')
+    local.bind('http://127.0.0.1:1', binding)
+    local.begin_attempt(binding, ['m1', 'm2'])
+    local.close()
+
+    assert _run('ack', '--id', 'm1', '--id', 'm2') == 0
+    assert 'm1' in capsys.readouterr().out
+    local = LocalStore(home['root'] / 'cfg' / 'queue' / 'local.db')
+    assert [a['message_id'] for a in local.pending_acks('mb_mine')] == ['m1', 'm2']
+    local.close()
+
+
+def test_ack_with_nothing_named_says_what_to_name(home, capsys):
+    _configured(home)
+    assert _run('ack') == 1
+    assert '--id' in capsys.readouterr().err
+
+
+def test_deliver_needs_a_pane_and_a_binding(home, capsys):
+    _configured(home)
+    assert _run('deliver') == 1
+    assert '--pane' in capsys.readouterr().err
+    assert _run('deliver', '--pane', '%3') == 1
+    assert 'bound' in capsys.readouterr().err
+
+
+def test_ack_is_noted_even_when_the_server_cannot_be_told(home, capsys):
+    """The ask outlives the attempt to deliver it."""
+    from collab.messaging.model import Binding
+
+    _configured(home)
+    local = LocalStore(home['root'] / 'cfg' / 'queue' / 'local.db')
+    binding = Binding('mb_mine', 'claude', 'ses-1', '/project', 'automatic')
+    local.bind('http://127.0.0.1:1', binding)
+    local.begin_attempt(binding, ['m1'])
+    local.close()
+
+    assert _run('ack', '--id', 'm1') == 0
+    assert 'noted' in capsys.readouterr().out
+    local = LocalStore(home['root'] / 'cfg' / 'queue' / 'local.db')
+    assert [a['message_id'] for a in local.pending_acks('mb_mine')] == ['m1']
+    local.close()

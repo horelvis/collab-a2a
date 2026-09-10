@@ -118,6 +118,41 @@ Then, in the session you want messages delivered into:
 | Consecutive automatic turns | 10 | Then delivery pauses until a person resumes it. The count is on disk. |
 | Held «anything pending?» request | 25 s client, 30 s server cap | The model is never what polls. |
 
+## Claude Code, which has no plugin host
+
+Two routes, and the pull one is both simpler and stronger:
+
+```bash
+# in the agent's own shell: take the next batch into this session
+collab queue take
+collab queue ack --id m_7c2 --id m_7c3
+
+# or, beside an open session, to wake it when work arrives (needs tmux)
+collab queue deliver --pane %3 --directory /path/to/project
+```
+
+`take` hands the batch over as the output of a command the agent itself ran, so
+whether it reached the session is not an inference from a pane — and the marker
+travels with it into the transcript all the same. It is what a Claude Code
+session should use for messages it is expecting; `deliver` is for the case
+where nobody is going to ask.
+
+`deliver` writes each batch to a file and types ONE line into the pane, with
+the delivery marker and the path. The peer's text is never typed: a message
+from another machine must not be able to become a line in a terminal. The
+marker lands in `~/.claude/projects/<slug>/<session>.jsonl` — the session's own
+record — and finding it there is what makes the delivery `delivered`, exactly
+as the marker in an OpenCode session's history does.
+
+`ack` takes no reservation of its own: it writes the ask into the outbox and
+`deliver` performs the receipt. An id this machine never delivered is refused.
+
+**One guarantee is weaker here.** A pane has no busy/idle to ask about, and
+Claude Code queues typed input rather than refusing it, so «wait for the turn to
+end» is not enforceable on this host. What remains is the consecutive-turn cap
+and the pause — the two that stop a loop rather than the one that avoids an
+interruption.
+
 ## When something is wrong
 
 `collab queue status` names the server, the identity, the counts by state, the

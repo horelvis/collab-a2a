@@ -88,6 +88,14 @@ OPERATOR_ONLY: dict[str, str] = {
     "queue resume": "see `queue bind`",
     "queue retry": "clears a block a person had to deal with first",
     "queue bridge": "run by the OpenCode plugin over a pipe, not typed",
+    "queue deliver": "the process that holds a mailbox for an open Claude Code "
+                     "session and types batches into its pane; the person "
+                     "starts it beside the session, like the daemon",
+    "queue take": "see `queue send` — the pull half of the same thing, and it "
+                  "belongs on an agent page beside it",
+    "queue ack": "see `queue send` — the acknowledgement belongs on an agent "
+                 "page together with the mailbox it acknowledges from, and "
+                 "goes there when the queue is introduced with its concepts",
 }
 
 

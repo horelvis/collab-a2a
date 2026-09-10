@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, TextIO
@@ -126,7 +127,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     actions: dict[str, Callable[[argparse.Namespace], int]] = {
         "configure": _configure, "send": _send, "status": _status,
         "bridge": _bridge, "bind": _bind, "pause": _pause, "resume": _resume,
-        "retry": _retry,
+        "retry": _retry, "ack": _ack, "deliver": _deliver, "take": _take,
     }
     return actions[args.action](args)
 
@@ -317,6 +318,184 @@ def _retry(args: argparse.Namespace) -> int:
     finally:
         local.close()
     return 0
+
+
+def _one_binding(local: LocalStore, mailbox: str | None):
+    """The binding this command is about, or the reason there is not one."""
+    bindings = [b for b in local.bindings() if mailbox in (None, b["mailbox"])]
+    if not bindings:
+        raise QueueError("not_found", "no mailbox is bound here — "
+                                      "`collab queue bind` binds one")
+    if len(bindings) > 1:
+        raise QueueError("conflict", "more than one mailbox is bound; name one"
+                                     " with --mailbox")
+    return bindings[0]
+
+
+def _ack(args: argparse.Namespace) -> int:
+    """Say this session has these messages. Delivery is somebody else's job.
+
+    Run by the agent in its own shell, which is why it takes no reservation:
+    the ask is written down and performed by whatever holds the mailbox. An id
+    this machine never delivered is refused rather than reported to the sender
+    as read.
+    """
+    ids = list(args.message_ids or [])
+    if not ids:
+        return _fail("--id names a message to acknowledge, once per message")
+    config = _configured()
+    local = LocalStore(local_store_path())
+    try:
+        binding = _one_binding(local, args.mailbox)
+        for message_id in ids:
+            local.request_ack(binding["mailbox"], message_id, args.sender or "")
+    except QueueError as exc:
+        local.close()
+        return _fail(exc.detail)
+    local.close()
+
+    # WRITTEN DOWN FIRST, THEN PERFORMED. The ask survives a server that is not
+    # there; carrying it out needs the mailbox's reservation, which this
+    # command borrows for a moment and hands straight back — a consumer that is
+    # already holding it does the same work on its next pass, and a repeated
+    # receipt says the same thing as the first.
+    if config is None:
+        print(f"noted: {', '.join(ids)} — configure the queue to send it on")
+        return 0
+    try:
+        client, local = _open(config)
+    except QueueError as exc:
+        print(f"noted: {', '.join(ids)} — {exc.detail}")
+        return 0
+    try:
+        held = _one_binding(local, args.mailbox)
+        bound_to = Binding(held["mailbox"], held["runtime"], held["session"],
+                           held["directory"], held["mode"])
+        hold = client.acquire(bound_to)
+        for message_id in ids:
+            client.receipt(held["mailbox"], message_id, hold, "acknowledged",
+                           None, sender=args.sender or None)
+            local.ack_done(held["mailbox"], message_id, args.sender or "")
+            print(f"acknowledged: {message_id}")
+        client.release(held["mailbox"], hold)
+    except QueueError as exc:
+        # The record stands; whoever holds the mailbox will carry it out.
+        print(f"noted: {', '.join(ids)} — not sent on yet ({exc.code})")
+    finally:
+        client.close()
+        local.close()
+    return 0
+
+
+def _take(args: argparse.Namespace) -> int:
+    """Take the next batch of pending messages into THIS session.
+
+    For a host with no plugin and nothing to type into — Claude Code, a shell,
+    anything an agent drives itself. The batch is this command's output, which
+    is why it is the strongest delivery of the three: no pane to infer from and
+    no host API to trust, just text the agent asked for and received.
+    """
+    from .claude import ClaudeDelivery
+
+    config = _configured()
+    if config is None:
+        return _fail("not configured yet — run `collab queue configure` first")
+    local = LocalStore(local_store_path())
+    try:
+        held = _one_binding(local, args.mailbox)
+    except QueueError as exc:
+        local.close()
+        return _fail(exc.detail)
+    local.close()
+
+    try:
+        client, local = _open(config)
+    except QueueError as exc:
+        return _fail(exc.detail)
+    binding = Binding(held["mailbox"], held["runtime"], held["session"],
+                      held["directory"], held["mode"])
+    try:
+        hold = client.acquire(binding)
+        session = ClaudeDelivery(client=client, local=local, binding=binding,
+                                 server=config["server"], hold=hold)
+        out = session.take(limit=args.limit)
+        if not out["delivered"]:
+            print(out.get("reason", "nothing waiting"))
+            return 0
+        print(out["text"])
+        client.release(binding.mailbox, hold)
+    except QueueError as exc:
+        return _fail(exc.detail)
+    finally:
+        client.close()
+        local.close()
+    return 0
+
+
+def _deliver(args: argparse.Namespace) -> int:
+    """Hold a mailbox for an open Claude Code session and type batches into it."""
+    from .claude import ClaudeDelivery
+
+    config = _configured()
+    if config is None:
+        return _fail("not configured yet — run `collab queue configure` first")
+    if not args.pane:
+        return _fail("--pane is the tmux pane the session is running in, e.g. %3")
+    local = LocalStore(local_store_path())
+    try:
+        binding = Binding(
+            _one_binding(local, args.mailbox)["mailbox"], "claude",
+            args.session or _newest_transcript(args.directory or os.getcwd()),
+            args.directory or os.getcwd(),
+            args.mode or config.get("mode") or "automatic")
+    except QueueError as exc:
+        local.close()
+        return _fail(exc.detail)
+    local.close()
+
+    try:
+        client, local = _open(config)
+    except QueueError as exc:
+        return _fail(exc.detail)
+    try:
+        hold = client.acquire(binding)
+        session = ClaudeDelivery(client=client, local=local, binding=binding,
+                                 server=config["server"], hold=hold,
+                                 pane=args.pane)
+        print(f"holding {binding.mailbox} for {binding.session} in {binding.directory}")
+        while True:
+            outcome = session.once()
+            if outcome["delivered"]:
+                print(f"delivered {', '.join(outcome['delivered'])}")
+            if args.once:
+                return 0
+            # The held request does the waiting; this is the floor under it.
+            try:
+                client.poll(binding, wait=HOLD_SECONDS)
+            except QueueError as exc:
+                print(f"collab queue deliver: {exc.code}", file=sys.stderr)
+                time.sleep(RETRY_SECONDS)
+    except QueueError as exc:
+        return _fail(exc.detail)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        client.close()
+        local.close()
+
+
+def _newest_transcript(directory: str) -> str:
+    """The session id of the most recent transcript for this directory."""
+    from .claude import TRANSCRIPT_ROOT, slug_for
+
+    folder = TRANSCRIPT_ROOT / slug_for(directory)
+    found = sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime,
+                   reverse=True) if folder.exists() else []
+    if not found:
+        raise QueueError("not_found",
+                         f"no Claude Code transcript for {directory} — name the"
+                         " session with --session")
+    return found[0].stem
 
 
 def _bridge(args: argparse.Namespace) -> int:
@@ -695,10 +874,13 @@ def add_queue_parser(sub: Any) -> None:
                             "OpenCode session")
     q.add_argument("action",
                    choices=["configure", "send", "status", "bridge", "bind",
-                            "pause", "resume", "retry"],
+                            "pause", "resume", "retry", "ack", "deliver",
+                            "take"],
                    help="set it up, send, look at it, run the plugin bridge, "
-                        "bind a session, pause or resume delivery, or retry a "
-                        "blocked message")
+                        "bind a session, pause or resume delivery, retry a "
+                        "blocked message, take the next batch into this "
+                        "session, acknowledge what you were given, or hold a "
+                        "mailbox for an open Claude Code session")
     q.add_argument("text", nargs="*", metavar="TEXT",
                    help="with `send`: what to say")
     q.add_argument("--server", metavar="URL", help="where the queue server is")
@@ -728,6 +910,17 @@ def add_queue_parser(sub: Any) -> None:
     q.add_argument("--runtime", metavar="NAME",
                    help="with `bind`: which coding tool, default opencode")
     q.add_argument("--reason", metavar="TEXT", help="with `pause`: why")
+    q.add_argument("--id", metavar="ID", dest="message_ids", action="append",
+                   help="with `ack`: a message id you were given; once per message")
+    q.add_argument("--sender", metavar="MAILBOX",
+                   help="with `ack`: which sender's message, when two have used"
+                        " the same id")
+    q.add_argument("--pane", metavar="TARGET",
+                   help="with `deliver`: the tmux pane the session runs in")
+    q.add_argument("--limit", type=int, metavar="N",
+                   help="with `take`: at most this many messages")
+    q.add_argument("--once", action="store_true",
+                   help="with `deliver`: take one batch and stop")
     q.add_argument("--json", action="store_true",
                    help="with `status`: the whole state as JSON")
     q.add_argument("--no-notifications", action="store_true",

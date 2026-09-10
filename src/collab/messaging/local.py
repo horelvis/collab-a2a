@@ -98,6 +98,19 @@ CREATE TABLE IF NOT EXISTS queue_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_queue_attempts_open
     ON queue_attempts(mailbox, state, started_at);
+
+-- AN ACKNOWLEDGEMENT ASKED FOR BY THE AGENT ITSELF. `collab queue ack` runs in
+-- the agent's own shell and holds no reservation — taking one for a command
+-- that lives half a second would take the mailbox off whoever is consuming it.
+-- So the ask is written here and performed by that consumer.
+CREATE TABLE IF NOT EXISTS queue_acks (
+    mailbox      TEXT NOT NULL,
+    sender       TEXT NOT NULL,
+    message_id   TEXT NOT NULL,
+    requested_at REAL NOT NULL,
+    done_at      REAL,
+    PRIMARY KEY (mailbox, sender, message_id)
+);
 """
 
 
@@ -498,6 +511,52 @@ class LocalStore:
             "started_at": row["started_at"], "finished_at": row["finished_at"],
             "opencode_message_id": row["opencode_message_id"],
         }
+
+    # ------------------------------------------------- acknowledgements asked for
+
+    def request_ack(self, mailbox: str, message_id: str, sender: str) -> None:
+        """Record that the agent says it has this message.
+
+        Refused for a message this machine never delivered: an acknowledgement
+        is the only evidence the sender gets that anybody read anything, and a
+        session must not be able to answer for a message it was never given.
+        """
+        identifier(mailbox, "mailbox")
+        identifier(message_id, "message_id")
+        # The sender may be unknown to the agent typing the command: it names
+        # ids, and the server resolves the rest unless two mailboxes have used
+        # the same id for this one, which is the case `--sender` is for.
+        if sender:
+            identifier(sender, "sender")
+        with self._write() as db:
+            delivered = db.execute(
+                "SELECT 1 FROM queue_attempts WHERE mailbox=? AND"
+                " message_ids LIKE ? LIMIT 1",
+                (mailbox, f'%"{message_id}"%')).fetchone()
+            if delivered is None:
+                raise QueueError(
+                    "not_found",
+                    f"{message_id} was not delivered to {mailbox} from here")
+            db.execute(
+                "INSERT INTO queue_acks (mailbox, sender, message_id, requested_at)"
+                " VALUES (?,?,?,?) ON CONFLICT(mailbox, sender, message_id)"
+                " DO UPDATE SET requested_at=excluded.requested_at, done_at=NULL",
+                (mailbox, sender, message_id, self._clock()))
+
+    def pending_acks(self, mailbox: str) -> list[dict[str, Any]]:
+        with self._read() as db:
+            rows = db.execute(
+                "SELECT mailbox, sender, message_id, requested_at FROM queue_acks"
+                " WHERE mailbox=? AND done_at IS NULL ORDER BY requested_at",
+                (mailbox,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def ack_done(self, mailbox: str, message_id: str, sender: str) -> None:
+        with self._write() as db:
+            db.execute(
+                "UPDATE queue_acks SET done_at=? WHERE mailbox=? AND sender=?"
+                " AND message_id=?",
+                (self._clock(), mailbox, sender, message_id))
 
     # ------------------------------------------------------------ what it says
 
