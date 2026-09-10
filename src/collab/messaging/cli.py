@@ -68,10 +68,22 @@ def save_queue_config(config: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
-def _profile(session_id: str):
-    """The saved session this queue borrows its identity and token from."""
+def _profile(session_id: str, home: str | None = None):
+    """The saved session this queue borrows its identity and token from.
+
+    BY PATH WHEN WE HAVE ONE. A session profile lives under the `.collab` of
+    the repository it was joined from, and `SessionProfile.load` finds it by
+    walking up from the current directory — which is fine for a person typing
+    in that repository and useless for the bridge, which the plugin starts in
+    whatever project the OpenCode session is in. So `configure` writes down
+    where the profile is, and this reads it from there.
+    """
     from ..config import SessionProfile
 
+    if home:
+        found = SessionProfile.load_from(Path(home) / "sessions" / session_id)
+        if found is not None:
+            return found
     return SessionProfile.load(session_id)
 
 
@@ -95,7 +107,7 @@ def _open(config: dict[str, Any]):
     """The client and its outbox, or a QueueError saying what is missing."""
     from .client import QueueClient
 
-    profile = _profile(config["profile"])
+    profile = _profile(config["profile"], config.get("home"))
     if profile is None:
         raise QueueError("not_found",
                          f"the session profile {config['profile']} is gone —"
@@ -132,11 +144,12 @@ def _configure(args: argparse.Namespace) -> int:
     if not args.mode:
         return _fail("--mode is `automatic` or `notification`, and is chosen "
                      "explicitly: it decides whether a message can start a turn")
-    if _profile(args.profile) is None:
+    profile = _profile(args.profile)
+    if profile is None:
         return _fail(f"no saved session {args.profile} — `collab sessions` lists "
                      "the ones this repo has")
     config = {"server": args.server.rstrip("/"), "profile": args.profile,
-              "identity": args.identity, "mode": args.mode}
+              "home": profile.home, "identity": args.identity, "mode": args.mode}
     save_queue_config(config)
     print(f"queue: {args.server} as {args.identity} ({args.mode} mode)")
     # THE MAILBOX IS THE SERVER'S TO MINT. Asking now means the id is on disk
@@ -363,8 +376,26 @@ def notify_loop(client: Any, local: LocalStore, write: Callable[[dict], None],
     failures = 0
     last_renewed = 0.0
     announced: dict[str, tuple[str, ...]] = {}
+    asleep: set[str] = set()
     while not stop.is_set():
-        bindings = [b for b in local.bindings() if not b["paused"]]
+        live = []
+        for record in local.bindings():
+            if record["paused"]:
+                # A paused mailbox is not consumed — and what was announced
+                # before the pause is forgotten, so that resuming announces it
+                # again. Without that, a person who resumed watched nothing
+                # happen: the news was the same news, and had already been told.
+                announced.pop(record["mailbox"], None)
+                asleep.add(record["mailbox"])
+                continue
+            if record["mailbox"] in asleep:
+                asleep.discard(record["mailbox"])
+                # Said out loud, because the plugin holds its own idea of being
+                # paused and cannot see this file.
+                write({"method": "resumed",
+                       "params": {"mailbox": record["mailbox"]}})
+            live.append(record)
+        bindings = live
         if not bindings:
             stop.wait(RETRY_SECONDS)
             continue

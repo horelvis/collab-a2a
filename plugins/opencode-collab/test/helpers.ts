@@ -11,6 +11,7 @@ import type { SessionHost, SessionState, MarkerLookup } from '../src/adapter.ts'
 import { DeliveryError } from '../src/adapter.ts'
 
 export type HarnessOptions = {
+  loopLimit?: number
   mode?: 'automatic' | 'notification'
   status?: SessionState
   directory?: string
@@ -133,8 +134,8 @@ export function makeHarness(options: HarnessOptions = {}) {
     async send(params: any) {
       return { id: 'm_sent', state: 'queued', ...params }
     },
-    async status() {
-      return { outbox: {}, bindings: [] }
+    async status(): Promise<any> {
+      return { outbox: {}, bindings: [] as any[] }
     },
     async release() {
       return { released: true }
@@ -154,6 +155,7 @@ export function makeHarness(options: HarnessOptions = {}) {
     bridge,
     binding,
     clock,
+    loopLimit: options.loopLimit,
     timers: {
       setTimeout(fn: () => void, ms: number) {
         const id = nextTimer++

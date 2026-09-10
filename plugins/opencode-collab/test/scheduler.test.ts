@@ -11,7 +11,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { DeliveryError } from '../src/adapter.ts'
-import { LOOP_LIMIT, MAX_BATCH_BYTES, MAX_BATCH_MESSAGES } from '../src/scheduler.ts'
+import { LOOP_LIMIT, MAX_BATCH_BYTES, MAX_BATCH_MESSAGES, loopLimitFrom }
+  from '../src/scheduler.ts'
 import { makeHarness } from './helpers.ts'
 
 test('busy session never receives a new prompt', async () => {
@@ -53,6 +54,54 @@ test('notification mode delivers nothing until somebody says so', async () => {
   assert.equal(h.notices.length, 1, 'the person was told')
   await h.scheduler.processOnce()
   assert.equal(h.deliveries.length, 1)
+})
+
+test('a batch asked for during a turn is delivered when that turn ends', async () => {
+  // The tool call that asks for it runs INSIDE a turn, so the session is busy
+  // by definition. The ask must survive that.
+  const h = makeHarness({ mode: 'notification', status: 'busy' })
+  await h.scheduler.onPending([h.request('m1')])
+  const answer = await h.scheduler.processOnce()
+  assert.equal(answer.delivered, false)
+  assert.match(answer.reason ?? '', /when this turn ends/)
+  assert.equal(h.scheduler.owed, true)
+
+  h.state.status = 'unknown'
+  await h.scheduler.onStatus('idle')
+  await h.advance(1500)
+  assert.equal(h.deliveries.length, 1)
+  assert.equal(h.scheduler.owed, false, 'and it is owed only once')
+
+  await h.scheduler.onPending([h.request('m2')])
+  await h.advance(30_000)
+  assert.equal(h.deliveries.length, 1, 'notification mode is still notification mode')
+})
+
+test('a resume from outside this process is noticed rather than argued with', async () => {
+  const h = makeHarness({ mode: 'automatic' })
+  await h.scheduler.pause('by hand')
+  await h.scheduler.onPending([h.request('m1')])
+  await h.advance(5000)
+  assert.equal(h.deliveries.length, 0)
+
+  // `collab queue resume` in a terminal: the outbox says live, we say paused.
+  h.bridge.status = async () => ({ outbox: {}, bindings: [
+    { mailbox: 'mb_mine', paused: false, paused_reason: null }] })
+  await h.scheduler.refresh()
+  await h.advance(1500)
+  assert.equal(h.deliveries.length, 1, 'the pending it was already holding goes')
+})
+
+test('a pause taken elsewhere stops delivery here too', async () => {
+  const h = makeHarness({ mode: 'automatic' })
+  h.bridge.status = async () => ({ outbox: {}, bindings: [
+    { mailbox: 'mb_mine', paused: true, paused_reason: 'paused in a terminal' }] })
+  await h.scheduler.pause('ours')
+  await h.scheduler.refresh()
+  await h.scheduler.onPending([h.request('m1')])
+  await h.advance(10_000)
+  assert.equal(h.deliveries.length, 0)
+  assert.equal(h.scheduler.state.reason, 'paused in a terminal')
 })
 
 test('an informational record is filed and starts nothing', async () => {
@@ -146,6 +195,14 @@ test('ten turns in a row pause automatic delivery', async () => {
   await h.scheduler.resume()
   await h.scheduler.processOnce()
   assert.equal(h.deliveries.length, 1)
+})
+
+test('the limit can be lowered, and nonsense does not lower it', () => {
+  assert.equal(loopLimitFrom({}), LOOP_LIMIT)
+  assert.equal(loopLimitFrom({ COLLAB_QUEUE_LOOP_LIMIT: '2' }), 2)
+  for (const bad of ['0', '-3', 'two', '2.5', '']) {
+    assert.equal(loopLimitFrom({ COLLAB_QUEUE_LOOP_LIMIT: bad }), LOOP_LIMIT, bad)
+  }
 })
 
 test('cancelling a turn does not start it again', async () => {

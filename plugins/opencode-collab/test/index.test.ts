@@ -27,6 +27,7 @@ function fakes(overrides: any = {}) {
   }
   const bridge: any = {
     async bind(params: any) { calls.push({ bind: params }); return { lease: {} } },
+    ...(overrides.waiting ? {} : {}),
     async begin_attempt(params: any) {
       return { id: 'at_1', marker: '[collab-delivery:at_1]', message_ids: params.message_ids }
     },
@@ -36,7 +37,7 @@ function fakes(overrides: any = {}) {
     async unfinished_attempts() { return [] },
     async pause(params: any) { calls.push({ pause: params }); return params },
     async resume(params: any) { calls.push({ resume: params }); return params },
-    async poll() { return [] },
+    async poll() { return overrides.waiting ?? [] },
     async send(params: any) { return { id: 'm_1', state: 'queued', ...params } },
     async status() { return { outbox: { queued: 1 }, bindings: [] } },
     async release() { return { released: true } },
@@ -69,6 +70,15 @@ test('binding takes the session from the tool context, never from an argument', 
   const bound = calls.find((c) => c.bind)?.bind
   assert.equal(bound.session, 'ses_real')
   assert.equal(bound.directory, '/project')
+})
+
+test('binding asks for what was already waiting, not only for what arrives next', async () => {
+  const { collab } = fakes({ waiting: [
+    { id: 'm_old', sender: 'mb_them', kind: 'request', text: 'from before',
+      seq: 1, state: 'pending' }] })
+  await collab.tools.collab_bind.execute({ mailbox: 'mb_mine', mode: 'automatic' } as any,
+    context('ses_bound'))
+  assert.equal(collab.scheduler!.state.pending, 1)
 })
 
 test('a session that is not there is not bound', async () => {

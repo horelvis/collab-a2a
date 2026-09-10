@@ -20,7 +20,7 @@ import { createHost } from './adapter.ts'
 import type { SessionHost } from './adapter.ts'
 import { Bridge } from './bridge.ts'
 import type { BridgeCalls } from './scheduler.ts'
-import { Scheduler } from './scheduler.ts'
+import { Scheduler, loopLimitFrom } from './scheduler.ts'
 import type { Binding, PendingRecord } from './scheduler.ts'
 
 export type CollabInput = {
@@ -28,6 +28,8 @@ export type CollabInput = {
   bridge: BridgeCalls & { start?: () => void; close?: () => void }
   directory: string
   diagnostics?: (what: string) => void
+  /** Consecutive automatic turns before delivery pauses. */
+  loopLimit?: number
 }
 
 /** Everything the plugin does, with its two edges injected so it can be tested. */
@@ -60,15 +62,34 @@ export function createCollab(input: CollabInput) {
     // another directory, is refused before the server is told anything.
     await input.host.requireSession(sessionID, directory)
     await input.bridge.bind(binding as any)
-    scheduler = new Scheduler({ host: input.host, bridge: input.bridge, binding })
+    scheduler = new Scheduler({ host: input.host, bridge: input.bridge, binding,
+                                loopLimit: input.loopLimit })
     // Anything a previous run prepared and never concluded is settled before
     // this one delivers, so a restart cannot become a resend.
     await scheduler.reconcile()
+    // AND ASK WHAT IS ALREADY WAITING. The bridge pushes pending work as it
+    // arrives, but anything it pushed before this binding existed was
+    // addressed to nobody — and it does not push the same set twice. Without
+    // this, a message that arrived while the editor was closed sat there,
+    // which is the case the whole design exists for.
+    try {
+      const waiting = await input.bridge.poll(binding as any)
+      if (waiting?.length) await scheduler.onPending(waiting)
+    } catch (error: any) {
+      input.diagnostics?.(`poll-on-bind: ${error?.code ?? 'failed'}`)
+    }
     return binding
   }
 
   async function onNotification(message: { method: string; params: any }) {
-    if (message.method !== 'pending' || !scheduler) return
+    if (!scheduler) return
+    if (message.method === 'resumed') {
+      // Somebody lifted the pause from a terminal. We hold our own copy of
+      // that flag and would otherwise sit still while the outbox said go.
+      await scheduler.refresh()
+      return
+    }
+    if (message.method !== 'pending') return
     const records: PendingRecord[] = message.params?.records ?? []
     if (!records.length) return
     await scheduler.onPending(records)
@@ -210,7 +231,8 @@ export const CollabQueue: Plugin = async ({ client, directory }) => {
     onDiagnostic: (what) => console.error(`[collab-queue] ${what}`),
     onNotification: (message) => { void collab.onNotification(message) },
   })
-  const collab = createCollab({ host, bridge, directory })
+  const collab = createCollab({ host, bridge, directory,
+                                loopLimit: loopLimitFrom(process.env) })
   bridge.start()
 
   return {

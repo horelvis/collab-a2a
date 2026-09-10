@@ -102,7 +102,7 @@ Then, in the session you want messages delivered into:
 |---|---|
 | Session busy | Nothing. The batch is kept and offered when the turn ends. |
 | Session idle, `automatic`, a request or response is waiting | One turn, with the pending grouped into it. |
-| `notification` mode | The person is told; `collab_process` takes a batch. |
+| `notification` mode | The person is told; `collab_process` takes a batch — and because that tool call runs inside a turn, the batch is delivered the moment that turn ends. |
 | Only informational records waiting | Nothing is activated; they ride along with the next batch. |
 | Session deleted, or its directory changed | Delivery pauses and asks to be bound again. Pending stay pending. |
 | Reservation lost, or a delivery that cannot be checked | Delivery suspends until it is reconciled or resumed. |
@@ -129,7 +129,10 @@ credential.
   `collab queue retry`.
 - **A paused binding** says why: a loop limit reached, a cancelled turn, a
   session that moved, or a delivery that could not be confirmed either way.
-  `collab queue resume` starts delivery again and clears the turn count.
+  `collab queue resume` starts delivery again and clears the turn count — and
+  reaches a plugin already running, which holds its own copy of that flag.
+- **A turn cancelled in the editor** is not a collab pause: the batch it
+  carried stays delivered and unacknowledged, and nothing is sent again.
 - **An uncertain delivery** is the one case where nothing happens
   automatically. The attempt is on the disk, the session's history could not be
   read, and a blind resend could make an agent do the same work twice. It waits

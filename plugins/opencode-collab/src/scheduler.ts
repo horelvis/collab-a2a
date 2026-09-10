@@ -76,6 +76,21 @@ export const MAX_BATCH_BYTES = 32 * 1024
 /** Consecutive automatic turns without a person intervening. */
 export const LOOP_LIMIT = 10
 
+/**
+ * The same limit, as this run is configured.
+ *
+ * The spec calls it configurable, and there is a second reason beyond taste:
+ * proving that the cap works costs one model turn per unit, so a limit nobody
+ * can lower is a limit nobody tests against a real session.
+ */
+export function loopLimitFrom(env: Record<string, string | undefined>): number {
+  const raw = env.COLLAB_QUEUE_LOOP_LIMIT
+  if (!raw) return LOOP_LIMIT
+  const asked = Number(raw)
+  if (!Number.isInteger(asked) || asked < 1) return LOOP_LIMIT
+  return asked
+}
+
 type Timers = {
   setTimeout(fn: () => void, ms: number): ReturnType<typeof setTimeout>
   clearTimeout(handle: ReturnType<typeof setTimeout>): void
@@ -89,6 +104,7 @@ export type SchedulerInput = {
   timers?: Timers
   settleMs?: number
   markerSettleMs?: number
+  loopLimit?: number
 }
 
 export type Outcome = {
@@ -109,6 +125,7 @@ export class Scheduler {
   private readonly timers: Timers
   private readonly settleMs: number
   private readonly markerSettleMs: number
+  private readonly loopLimit: number
 
   readonly binding: Binding
 
@@ -122,6 +139,16 @@ export class Scheduler {
   private oldestArrived: number | null = null
   private paused = false
   private pausedReason = ''
+  /**
+   * A person asked for a batch and the session was busy.
+   *
+   * It is busy BECAUSE they asked: the tool call runs inside a turn of its
+   * own, so «process one batch now» from inside the session can never find an
+   * idle session. The ask is remembered and honoured the moment that turn
+   * ends — which is what the person meant — rather than answered with «busy»
+   * forever, and rather than interrupting the turn they are in.
+   */
+  private requested = false
 
   constructor(input: SchedulerInput) {
     this.host = input.host
@@ -131,6 +158,7 @@ export class Scheduler {
     this.timers = input.timers ?? { setTimeout, clearTimeout }
     this.settleMs = input.settleMs ?? SETTLE_MS
     this.markerSettleMs = input.markerSettleMs ?? MARKER_SETTLE_MS
+    this.loopLimit = input.loopLimit ?? LOOP_LIMIT
   }
 
   // ------------------------------------------------------------------ events
@@ -141,8 +169,14 @@ export class Scheduler {
     if (status !== 'busy') this.arm()
   }
 
+  /** Whether a batch asked for during a turn is still owed. */
+  get owed(): boolean {
+    return this.requested
+  }
+
   /** The server says these records are waiting. */
   async onPending(records: PendingRecord[]): Promise<void> {
+    if (this.paused) await this.syncPause()
     let announced = false
     for (const record of records ?? []) {
       const key = `${record.sender}:${record.id}`
@@ -176,7 +210,8 @@ export class Scheduler {
   }
 
   private arm(): void {
-    if (this.paused || this.binding.mode !== 'automatic') return
+    if (this.paused) return
+    if (this.binding.mode !== 'automatic' && !this.requested) return
     if (!this.activating().length) return
     if (this.sessionState === 'busy') return
     if (this.timer !== null) this.timers.clearTimeout(this.timer)
@@ -212,6 +247,44 @@ export class Scheduler {
   }
 
   /**
+   * Adopt a pause, or a resume, that happened outside this process.
+   *
+   * `collab queue resume` writes to the outbox; this scheduler holds a boolean.
+   * Without this, a person who resumed from a terminal would watch nothing
+   * happen, because the two disagreed and only one of them was asked.
+   */
+  async refresh(): Promise<void> {
+    // The disk is the authority on whether delivery is paused, and this process
+    // cannot see it change. Called when the bridge says a pause was lifted, and
+    // whenever pending work arrives while we believe we are paused.
+    await this.syncPause()
+    if (!this.paused) this.arm()
+  }
+
+  private async syncPause(): Promise<void> {
+    let state: any
+    try {
+      state = await this.bridge.status({})
+    } catch {
+      return   // the bridge is the source of truth, and it is not answering
+    }
+    const held = (state?.bindings ?? []).find(
+      (b: any) => b.mailbox === this.binding.mailbox)
+    if (!held) return
+    if (held.paused && held.paused_reason && this.paused) {
+      this.pausedReason = held.paused_reason
+      return
+    }
+    if (!held.paused && this.paused) {
+      this.paused = false
+      this.pausedReason = ''
+    } else if (held.paused && !this.paused) {
+      this.paused = true
+      this.pausedReason = held.paused_reason ?? 'paused elsewhere'
+    }
+  }
+
+  /**
    * Stop the running turn. The messages it carried stay pending and are NOT
    * offered again on their own: somebody cancelled this on purpose, and an
    * automatic retry is the thing they were cancelling.
@@ -241,6 +314,10 @@ export class Scheduler {
   }
 
   private async deliverBatch(): Promise<Outcome> {
+    // ASKED EVERY TIME, in both directions. A pause taken in a terminal must
+    // stop this process, and a resume taken there must start it; the flag in
+    // memory is a cache of something another process owns.
+    await this.syncPause()
     if (this.paused) return { delivered: false, reason: this.pausedReason || 'paused' }
     const batch = this.chooseBatch()
     if (!batch.length) return { delivered: false, reason: 'nothing to deliver' }
@@ -258,13 +335,17 @@ export class Scheduler {
     const status = await this.host.status(this.binding.session)
     this.sessionState = status
     if (status === 'busy') {
-      // A human turn won the race. Keep the batch; the next idle arms it.
-      return { delivered: false, reason: 'the session is busy' }
+      // A human turn won the race — or this IS the human's turn, asking for a
+      // batch from inside the session. Keep it, remember that it was asked
+      // for, and deliver when the turn ends.
+      this.requested = true
+      return { delivered: false,
+               reason: 'the session is busy — the batch will be delivered when this turn ends' }
     }
 
     if (this.binding.mode === 'automatic') {
       const { turns } = await this.bridge.turn_taken({ mailbox: this.binding.mailbox })
-      if (turns > LOOP_LIMIT) {
+      if (turns > this.loopLimit) {
         await this.pause(
           `${turns - 1} automatic turns in a row without anybody intervening —` +
           ' delivery is paused and the messages are still pending')
@@ -318,6 +399,7 @@ export class Scheduler {
       })
     }
     this.oldestArrived = this.pending.size ? this.clock() : null
+    this.requested = false
     return { delivered: true, attempt: attempt.id, ids }
   }
 

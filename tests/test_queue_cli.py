@@ -384,3 +384,67 @@ def test_the_reservation_is_renewed_while_the_loop_runs(home):
                           holds={'mb_mine': {'token': 't1', 'generation': 1}})
     assert renewals == [('mb_mine', 't1')]
     local.close()
+
+
+def test_the_config_says_where_the_profile_lives_not_only_its_id(home, monkeypatch,
+                                                                tmp_path):
+    """The bridge runs wherever the editor is, not where you configured it.
+
+    `SessionProfile.load` walks up from the current directory to find a repo's
+    `.collab`. The plugin starts `collab queue bridge` in the project directory
+    of the OpenCode session, which is somebody else's repository or none at
+    all — so the profile is found by the path written down here, or not at all.
+    """
+    _run('configure', '--server', 'http://127.0.0.1:1', '--profile', 's_1',
+         '--identity', 'mac/ios', '--mode', 'automatic')
+    saved = json.loads((home['root'] / 'cfg' / 'queue' / 'config.json').read_text())
+    assert saved['home'] == str(home['root'] / 'home')
+    assert 'tok' not in json.dumps(saved), 'the path, never the credential'
+
+    elsewhere = tmp_path / 'some' / 'other' / 'project'
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv('COLLAB_HOME', raising=False)
+    found = queue_cli._profile(saved['profile'], saved.get('home'))
+    assert found is not None and found.token == 'tok'
+    # And without the path, from here, it is not found at all — which is the
+    # failure this test exists to keep fixed.
+    assert queue_cli._profile(saved['profile']) is None
+
+
+def test_resuming_says_so_and_announces_the_pending_again(home):
+    """A person resumes in a terminal; the plugin is a different process.
+
+    It holds its own «paused», and nothing in this loop can reach into it — so
+    the lifting of the pause is said out loud, and what was announced before it
+    is forgotten so that the same pending work is news again.
+    """
+    written = []
+    state = {'paused': True}
+
+    class Bindings:
+        """The outbox as this loop reads it, with a pause lifted mid-run."""
+
+        def bindings(self):
+            return [{'server': 'http://127.0.0.1:1', 'mailbox': 'mb_mine',
+                     'runtime': 'opencode', 'session': 'ses_1',
+                     'directory': '/project', 'mode': 'automatic',
+                     'turns': 0, 'paused': state['paused'],
+                     'paused_reason': None}]
+
+    class Client:
+        def poll(self, binding, wait=0.0):
+            return [{'id': 'm1', 'sender': 'mb_them', 'kind': 'request',
+                     'text': 'hello', 'seq': 1, 'state': 'pending'}]
+
+    class Waking(_Stopper):
+        """Lifts the pause after the first idle wait, and stops after the next."""
+
+        def wait(self, seconds):
+            state['paused'] = False
+            return super().wait(seconds)
+
+    queue_cli.notify_loop(Client(), Bindings(), written.append, Waking(rounds=2))
+    assert [w['method'] for w in written] == ['resumed', 'pending']
+    assert written[0]['params']['mailbox'] == 'mb_mine'
+    assert [r['id'] for r in written[1]['params']['records']] == ['m1']

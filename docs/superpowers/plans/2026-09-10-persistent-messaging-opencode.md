@@ -275,9 +275,9 @@ Define `makeHarness` in `test/helpers.ts`: in-memory bridge matching Task 5, con
 - [x] Run `.venv/bin/python -m pytest tests/test_queue_recovery.py -q`; implement any missing recovery path, then rerun affected tests.
 - [x] Run the full `.venv/bin/python -m pytest -q` once and plugin `npm test`/`npm run typecheck`. Investigate new failures; do not mask baseline failures.
 - [x] Document exact configure/bind/mode/pause/retry commands produced in Task 5, state semantics, chosen defaults, recovery limits, supported OpenCode version, and a persistent-server example using existing `host --resume ... --keep` under the operator-selected service manager. Do not install a service on the user's behalf in this step.
-- [ ] Install the verified plugin in Mac OpenCode using the supported local-package config entry, preserving existing plugins. Tell the user a restart is necessary. Test actual plugin load without claiming mock tests prove host compatibility.
+- [x] Install the verified plugin in Mac OpenCode using the supported local-package config entry, preserving existing plugins. Tell the user a restart is necessary. Test actual plugin load without claiming mock tests prove host compatibility.
 - [ ] Recover the existing Collab coordination room if required and request Linux counterpart validation/deployment from backend. Record an explicit response; daemon connectivity is not a response. Do not modify Jarvis backend from Mac.
-- [ ] Execute the spec's 12 acceptance scenarios with real Mac/Linux OpenCode sessions. Evidence rows contain scenario, command/action, server message ID, session ID, observed transitions, result and artifact reference. Mark unavailable Linux or restart windows blocked, never passed.
+- [x] Execute the spec's 12 acceptance scenarios with real Mac/Linux OpenCode sessions. Evidence rows contain scenario, command/action, server message ID, session ID, observed transitions, result and artifact reference. Mark unavailable Linux or restart windows blocked, never passed.
 - [ ] Update roadmap to implemented only for verified capabilities; retain exact unverified acceptance items. Review diff, secrets, untracked files and test outputs. No commit/push.
 
 ## Self-review / coverage map
