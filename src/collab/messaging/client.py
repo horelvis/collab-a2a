@@ -68,9 +68,19 @@ class QueueClient:
 
     def __init__(self, url: str, token: str, local: LocalStore,
                  transport: Any | None = None,
-                 timeout: float = REQUEST_TIMEOUT) -> None:
+                 timeout: float = REQUEST_TIMEOUT,
+                 identity: str | None = None, mailbox: str | None = None,
+                 on_mailbox: Callable[[str], None] | None = None) -> None:
         self.url = url.rstrip("/")
         self.local = local
+        # WHO THIS AGENT IS, in two forms. `identity` is the readable name a
+        # person configured — `mac/ios` — and `mailbox` is the id the server
+        # assigned it. A message may be written into the outbox before this
+        # machine has ever reached the server, so it is enqueued under the NAME
+        # and the id is put in its place on the way out. See `_as_sender`.
+        self.identity = identity
+        self.mailbox_id = mailbox
+        self._on_mailbox = on_mailbox
         self._http = httpx.Client(
             base_url=f"{self.url}{QUEUE_PREFIX}",
             headers={"Authorization": f"Bearer {token}"},
@@ -127,7 +137,35 @@ class QueueClient:
     # ------------------------------------------------------------- sending
 
     def mailbox(self, name: str) -> dict[str, Any]:
+        """This agent's mailbox by name, created if the server has none."""
         return self._request("POST", "/mailboxes", json={"name": name})
+
+    def identify(self) -> str:
+        """The id of our own mailbox, minting it the first time.
+
+        Idempotent on (owner, name), so calling it again — after a restart, or
+        after a config that lost the id — returns the same mailbox rather than
+        a second one nobody is sending to.
+        """
+        if self.mailbox_id:
+            return self.mailbox_id
+        if not self.identity:
+            raise QueueError("invalid", "this queue client has no identity")
+        found = self.mailbox(self.identity)["id"]
+        self.mailbox_id = found
+        if self._on_mailbox is not None:
+            self._on_mailbox(found)
+        return found
+
+    def _as_sender(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Put our mailbox id where the outbox wrote our name.
+
+        The record keeps the id it was written with, so a retry is still the
+        same record; what goes over the wire is what the server can route.
+        """
+        if not self.identity or body.get("sender") != self.identity:
+            return body
+        return {**body, "sender": self.identify()}
 
     def send(self, message: Message, room: str | None = None,
              now: float | None = None) -> dict[str, Any]:
@@ -157,7 +195,7 @@ class QueueClient:
                 body.pop("recipients", None)
                 body["room"] = record["room"]
             try:
-                receipt = self._request("POST", "/messages", json=body)
+                receipt = self._request("POST", "/messages", json=self._as_sender(body))
             except QueueError as exc:
                 self._failed(record, exc, when, out)
                 continue

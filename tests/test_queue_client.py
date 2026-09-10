@@ -192,3 +192,60 @@ def test_sending_writes_the_message_down_before_it_tries_anything(tmp_path):
     assert client.local.record('m1')['message']['text'] == 'diagnose'
     assert tried, 'it did try'
     client.close()
+
+
+def test_a_message_written_before_we_had_an_identity_still_goes_out_as_one(tmp_path):
+    """The outbox may be older than this agent's mailbox.
+
+    A message can be queued on a machine that has never reached the server —
+    that is the promise — so it is written under the name a person configured,
+    and the id the server assigns is put in its place on the way out. The
+    record keeps the id it was written with: a retry is the same record.
+    """
+    seen: list[dict] = []
+    minted: list[str] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append({'path': request.url.path, 'body': body})
+        if request.url.path.endswith('/mailboxes'):
+            return httpx.Response(200, json={'id': 'mb_assigned', 'owner': 'p_a',
+                                             'name': body['name'],
+                                             'created_at': 'now'})
+        return httpx.Response(200, json=_receipt())
+
+    local = LocalStore(tmp_path / 'local.db')
+    client = QueueClient('http://queue:9920', 'tok', local,
+                         transport=httpx.MockTransport(handler),
+                         identity='mac/ios', on_mailbox=minted.append)
+    waiting = Message('m1', 'mac/ios', ('mb_b',), 'request', 'diagnose', 'now', 'c_1')
+    local.enqueue('http://queue:9920', waiting, now=0.0)
+    assert client.flush(now=1000.0)['accepted'] == ['m1']
+
+    assert [call['path'] for call in seen] == [
+        '/ext/collab/v1/queue/mailboxes', '/ext/collab/v1/queue/messages']
+    assert seen[1]['body']['sender'] == 'mb_assigned'
+    assert minted == ['mb_assigned'], 'and the id is kept, so it is asked for once'
+    assert local.record('m1')['message']['sender'] == 'mac/ios'
+    client.close()
+    local.close()
+
+
+def test_an_identity_the_server_already_knows_is_not_asked_for_again(tmp_path):
+    asked: list[str] = []
+
+    def handler(request):
+        asked.append(request.url.path)
+        return httpx.Response(200, json=_receipt())
+
+    local = LocalStore(tmp_path / 'local.db')
+    client = QueueClient('http://queue:9920', 'tok', local,
+                         transport=httpx.MockTransport(handler),
+                         identity='mac/ios', mailbox='mb_known')
+    local.enqueue('http://queue:9920',
+                  Message('m1', 'mac/ios', ('mb_b',), 'request', 'x', 'now', 'c_1'),
+                  now=0.0)
+    client.flush(now=1000.0)
+    assert asked == ['/ext/collab/v1/queue/messages']
+    client.close()
+    local.close()

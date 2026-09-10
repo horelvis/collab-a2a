@@ -80,6 +80,17 @@ def _fail(message: str, err: TextIO | None = None) -> int:
     return 1
 
 
+def _remember_mailbox(config: dict[str, Any]) -> Callable[[str], None]:
+    """Write the id the server assigned us back into the config, once."""
+    def keep(mailbox: str) -> None:
+        current = load_queue_config() or dict(config)
+        if current.get("mailbox") == mailbox:
+            return
+        current["mailbox"] = mailbox
+        save_queue_config(current)
+    return keep
+
+
 def _open(config: dict[str, Any]):
     """The client and its outbox, or a QueueError saying what is missing."""
     from .client import QueueClient
@@ -90,7 +101,11 @@ def _open(config: dict[str, Any]):
                          f"the session profile {config['profile']} is gone —"
                          " run `collab queue configure` again")
     local = LocalStore(local_store_path())
-    return QueueClient(config["server"], profile.token, local), local
+    client = QueueClient(config["server"], profile.token, local,
+                         identity=config.get("identity"),
+                         mailbox=config.get("mailbox"),
+                         on_mailbox=_remember_mailbox(config))
+    return client, local
 
 
 # --- the commands -------------------------------------------------------------
@@ -120,9 +135,26 @@ def _configure(args: argparse.Namespace) -> int:
     if _profile(args.profile) is None:
         return _fail(f"no saved session {args.profile} — `collab sessions` lists "
                      "the ones this repo has")
-    save_queue_config({"server": args.server.rstrip("/"), "profile": args.profile,
-                       "identity": args.identity, "mode": args.mode})
+    config = {"server": args.server.rstrip("/"), "profile": args.profile,
+              "identity": args.identity, "mode": args.mode}
+    save_queue_config(config)
     print(f"queue: {args.server} as {args.identity} ({args.mode} mode)")
+    # THE MAILBOX IS THE SERVER'S TO MINT. Asking now means the id is on disk
+    # before anything needs it; failing to ask is not fatal, because the outbox
+    # holds messages under the name and puts the id in on the way out.
+    try:
+        client, local = _open(config)
+    except QueueError as exc:
+        print(f"  the server could not be reached yet: {exc.detail}")
+        return 0
+    try:
+        print(f"  mailbox {client.identify()}")
+    except QueueError as exc:
+        print(f"  not registered with the server yet ({exc.code}) — it will be"
+              " the first time it answers")
+    finally:
+        client.close()
+        local.close()
     return 0
 
 
