@@ -11,3 +11,6 @@ dist/
 .pytest_cache/
 # local working notes for agents, deliberately not shared
 CLAUDE.md
+
+# The OpenCode plugin's dependencies, installed by npm.
+plugins/*/node_modules/

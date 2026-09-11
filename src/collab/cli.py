@@ -6443,6 +6443,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_session_flag(s)
     s.set_defaults(func=cmd_send)
 
+    from .messaging.cli import add_queue_parser
+    add_queue_parser(sub)
+
     ln = sub.add_parser("learn",
                         help="what this agent has learnt about this repo, and"
                              " what the others have")

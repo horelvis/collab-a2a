@@ -69,6 +69,33 @@ OPERATOR_ONLY: dict[str, str] = {
     "statusline uninstall": "see `statusline install`",
     "statusline status": "see `statusline install`",
     "statusline render": "what the installed hook calls; not typed",
+    # THE QUEUE IS NOT YET ON AN AGENT PAGE, and deliberately: no skill
+    # introduces a mailbox, a reservation or an acknowledgement, and a verb
+    # without its concept is worse than neither — the reason `rooms` is here.
+    # The person configures it and binds a session; the plugin drives the rest
+    # through `queue bridge`. When delivery into a real OpenCode session has
+    # been verified end to end, `send`, `status` and the acknowledgement belong
+    # on an agent page and these entries should go.
+    "queue configure": "the person chooses the queue server, the identity and "
+                       "whether a peer's message may start a turn",
+    "queue send": "no agent page introduces mailboxes; `collab send` is the "
+                  "verb an agent is taught, and this one is the person's until "
+                  "the queue is introduced with its concepts",
+    "queue status": "see `queue send`",
+    "queue bind": "binds an OpenCode session to a mailbox; the person does it "
+                  "once per session, and the plugin restores it",
+    "queue pause": "see `queue bind` — a person's control over automatic delivery",
+    "queue resume": "see `queue bind`",
+    "queue retry": "clears a block a person had to deal with first",
+    "queue bridge": "run by the OpenCode plugin over a pipe, not typed",
+    "queue deliver": "the process that holds a mailbox for an open Claude Code "
+                     "session and types batches into its pane; the person "
+                     "starts it beside the session, like the daemon",
+    "queue take": "see `queue send` — the pull half of the same thing, and it "
+                  "belongs on an agent page beside it",
+    "queue ack": "see `queue send` — the acknowledgement belongs on an agent "
+                 "page together with the mailbox it acknowledges from, and "
+                 "goes there when the queue is introduced with its concepts",
 }
 
 

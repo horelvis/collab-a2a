@@ -86,7 +86,7 @@ From that moment both agents receive each other's messages as they happen.
 - [How it works](#how-it-works) · [Install](#install) · [Quick start](#quick-start)
 - [Making an agent listen](#making-an-agent-listen) · [Saying what you are doing](#saying-what-you-are-doing) · [Commands](#commands)
 - [Watching the conversation](#watching-the-conversation) · [How it looks](#how-the-conversation-looks) · [Status line](#status-line) · [Files](#sharing-files-and-artifacts)
-- [Learnings](#sharing-what-you-learn) · [Security](#security) · [Diagnostics](#diagnostics) · [Settings](#settings)
+- [Learnings](#sharing-what-you-learn) · [Durable messages](docs/persistent-messaging.md) · [Security](#security) · [Diagnostics](#diagnostics) · [Settings](#settings)
 - [Sharing without ngrok](#sharing-without-ngrok) · [Troubleshooting](#troubleshooting)
 - [Batches of work](#batches-of-work) · [Documentation](#documentation) · [Protocol](SPEC.md) · [For agents](AGENT_INSTALL.md) · [Contributing](CONTRIBUTING.md) · [Thanks](#thanks)
 
